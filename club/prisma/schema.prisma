@@ -1,0 +1,501 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  MEMBER
+  ADMIN
+  OWNER
+  COACH
+}
+
+enum SubscriptionStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  SUSPENDED
+}
+
+enum ActivityType {
+  BODYBUILDING
+  FITNESS
+  CARDIO
+  CROSSFIT
+  YOGA
+  PILATES
+  BOXE
+  MMA
+  AQUAGYM
+  PADEL
+  ZUMBA
+  SPINNING
+}
+
+enum ReportStatus {
+  PENDING
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum Language {
+  FR
+  EN
+  AR
+}
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String?
+  googleId      String?   @unique
+  name          String
+  phone         String?
+  avatar        String?
+  role          Role      @default(MEMBER)
+  isActive      Boolean   @default(true)
+  emailVerified DateTime?
+
+  // Email verification (6-digit code sent at registration)
+  verificationCodeHash   String?
+  verificationCodeExpiry DateTime?
+
+  // Password reset (opaque token sent by email link)
+  resetTokenHash   String?
+  resetTokenExpiry DateTime?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Existing relations
+  subscriptions  Subscription[]
+  userSessions   UserSession[]
+  membershipCard MembershipCard?
+  attendances    Attendance[]
+  notifications  Notification[]
+  preferences    UserPreferences?
+
+  // News relations
+  posts    Post[]
+  likes    Like[]
+  comments Comment[]
+
+  // Member reports/complaints ("signalements")
+  memberReports MemberReport[]
+
+  // Optional: set when this user's role is COACH and they're linked to a Coach profile
+  coachProfile Coach?
+
+  @@map("users")
+}
+
+// ─── Membership Plan ──────────────────────────────────────────────────────────
+
+model MembershipPlan {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  price        Float
+  durationDays Int
+  features     String[]
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("membership_plans")
+}
+
+// ─── Subscription ─────────────────────────────────────────────────────────────
+
+model Subscription {
+  id        String             @id @default(cuid())
+  userId    String
+  planId    String
+  startDate DateTime           @default(now())
+  endDate   DateTime
+  status    SubscriptionStatus @default(ACTIVE)
+  autoRenew Boolean            @default(false)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan     MembershipPlan @relation(fields: [planId], references: [id])
+  payments Payment[]
+
+  @@index([userId])
+  @@map("subscriptions")
+}
+
+// ─── Payment ──────────────────────────────────────────────────────────────────
+
+model Payment {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  amount         Float
+  currency       String   @default("TND")
+  status         String   @default("PENDING")
+  paymentMethod  String
+  transactionId  String?
+  paidAt         DateTime?
+  createdAt      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("payments")
+}
+
+// ─── Weekly Plan ──────────────────────────────────────────────────────────────
+
+model WeeklyPlan {
+  id         String   @id @default(cuid())
+  weekStart  DateTime
+  weekEnd    DateTime
+  isActive   Boolean  @default(false)
+  isArchived Boolean  @default(false)
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  sessions Session[]
+
+  @@unique([weekStart, weekEnd])
+  @@map("weekly_plans")
+}
+
+// ─── Session ──────────────────────────────────────────────────────────────────
+
+model Session {
+  id              String       @id @default(cuid())
+  weeklyPlanId    String
+  day             DayOfWeek
+  startTime       String
+  endTime         String
+  activity        ActivityType
+  coach           String
+  coachId         String?
+  capacity        Int          @default(20)
+  currentBookings Int          @default(0)
+  description     String?
+  location        String       @default("Main Hall")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  weeklyPlan   WeeklyPlan    @relation(fields: [weeklyPlanId], references: [id], onDelete: Cascade)
+  coachRef     Coach?        @relation(fields: [coachId], references: [id])
+  userSessions UserSession[]
+  attendances  Attendance[]
+
+  @@index([weeklyPlanId])
+  @@index([coachId])
+  @@map("sessions")
+}
+
+// ─── Coach ────────────────────────────────────────────────────────────────────
+// coachId on Session already existed as an unused nullable column (a stub
+// from an earlier attempt) — this is the model it was always meant to
+// point at. Session.coach (free-text name) is kept as a denormalized
+// display fallback for sessions created before this model existed.
+
+model Coach {
+  id          String   @id @default(cuid())
+  userId      String?  @unique
+  name        String
+  bio         String?
+  photoUrl    String?
+  specialties String[]
+  phone       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user     User?     @relation(fields: [userId], references: [id])
+  sessions Session[]
+
+  @@map("coaches")
+}
+
+// ─── User Session ─────────────────────────────────────────────────────────────
+
+model UserSession {
+  id          String    @id @default(cuid())
+  userId      String
+  sessionId   String
+  bookedAt    DateTime  @default(now())
+  cancelledAt DateTime?
+  isCancelled Boolean   @default(false)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sessionId])
+  @@index([sessionId])
+  @@map("user_sessions")
+}
+
+// ─── Membership Card ──────────────────────────────────────────────────────────
+
+model MembershipCard {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  cardNumber String    @unique
+  qrCode     String
+  isActive   Boolean   @default(true)
+  issuedAt   DateTime  @default(now())
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("membership_cards")
+}
+
+// ─── Attendance ───────────────────────────────────────────────────────────────
+
+model Attendance {
+  id           String    @id @default(cuid())
+  userId       String
+  sessionId    String?
+  checkInTime  DateTime  @default(now())
+  checkOutTime DateTime?
+  createdBy    String?
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id])
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("attendances")
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id      String   @id @default(cuid())
+  userId  String
+  title   String
+  message String
+  type    String
+  channels String[] @default(["SITE"])
+  isRead  Boolean  @default(false)
+  data    Json?
+  sentAt  DateTime @default(now())
+  readAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ─── User Preferences ─────────────────────────────────────────────────────────
+
+model UserPreferences {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  emailNotifications Boolean  @default(true)
+  pushNotifications  Boolean  @default(true)
+  smsNotifications   Boolean  @default(false)
+  language           Language @default(FR)
+  darkMode           Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// ─── Post (News / Announcements) ──────────────────────────────────────────────
+
+model Post {
+  id          String   @id @default(cuid())
+  authorId    String
+  title       String?
+  content     String
+  mediaUrl    String?         // URL of image / video / audio file
+  mediaType   String?         // "image" | "video" | "audio"
+  musicUrl    String?         // background music URL (for video posts)
+  isPublished Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  author   User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes    Like[]
+  comments Comment[]
+
+  @@index([authorId])
+  @@index([createdAt])
+  @@map("posts")
+}
+
+// ─── Like ─────────────────────────────────────────────────────────────────────
+
+model Like {
+  id        String   @id @default(cuid())
+  userId    String
+  postId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([postId])
+  @@map("likes")
+}
+
+// ─── Promotion ────────────────────────────────────────────────────────────────
+
+model Promotion {
+  id            String       @id @default(cuid())
+  code          String       @unique
+  title         String
+  description   String?
+  discountType  DiscountType @default(PERCENT)
+  discountValue Float
+  startDate     DateTime     @default(now())
+  endDate       DateTime?
+  maxUses       Int?
+  usedCount     Int          @default(0)
+  isActive      Boolean      @default(true)
+  createdBy     String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@map("promotions")
+}
+
+// ─── Gym Settings (singleton) ──────────────────────────────────────────────────
+
+model GymSettings {
+  id            String   @id @default(cuid())
+  name          String   @default("Le Club de Gammarth")
+  logoUrl       String?
+  address       String?
+  phone         String?
+  email         String?
+  workingHours  Json?
+  facebookUrl   String?
+  instagramUrl  String?
+  tiktokUrl     String?
+  primaryColor  String?  @default("#0f172a")
+  backgroundColor     String? @default("#ffffff")
+  backgroundColorDark String? @default("#0a0a0a")
+  enabledPages  Json?
+  heroTitle     String?
+  heroSubtitle  String?
+  heroImageUrl  String?
+  updatedBy     String?
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+
+  @@map("gym_settings")
+}
+
+// ─── Page Content (generic editable text/photo slots per page) ────────────────
+// Each row holds every editable slot for one public page as a flat
+// key -> string map (text or image URL). Which slots exist for a page is
+// defined in code (lib/page-content-schema.ts), not in the DB — adding a
+// new editable spot on a page is a config change, not a migration.
+
+model PageContent {
+  id        String   @id @default(cuid())
+  pageKey   String   @unique
+  content   Json     @default("{}")
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("page_content")
+}
+
+// ─── Role Permissions ───────────────────────────────────────────────────────────
+// Fine-grained toggles the OWNER can flip for the ADMIN role. A missing row for
+// a given key means "allowed" (keeps current Admin behavior unless the Owner
+// explicitly revokes it) — only rows with allowed=false actually restrict.
+
+model RolePermission {
+  id        String   @id @default(cuid())
+  role      Role
+  key       String
+  allowed   Boolean  @default(true)
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([role, key])
+  @@map("role_permissions")
+}
+
+// ─── Comment ──────────────────────────────────────────────────────────────────
+
+model Comment {
+  id        String   @id @default(cuid())
+  userId    String
+  postId    String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([userId])
+  @@map("comments")
+}
+
+// ─── Member Report ────────────────────────────────────────────────────────────
+// Member-submitted complaints/issues ("signalements"). Members create these
+// from /dashboard/reports; Admin/Owner review and treat them from
+// /admin/reports. NOTE: this model was referenced by three API routes
+// (app/api/dashboard/reports, app/api/admin/member-reports[/[id]]) with no
+// matching schema definition — the feature was completely non-functional
+// until this model was added. Run `npx prisma db push` (or set up a proper
+// `prisma migrate dev` migration) against your database before deploying.
+
+model MemberReport {
+  id        String       @id @default(cuid())
+  userId    String
+  subject   String
+  message   String
+  status    ReportStatus @default(PENDING)
+  adminNote String?
+  treatedBy String?
+  treatedAt DateTime?
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("member_reports")
+}
